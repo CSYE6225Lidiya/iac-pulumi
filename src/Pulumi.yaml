@@ -1,0 +1,3 @@
+name: pulumi-infra-setup
+runtime: go
+description: Setup Networking using Pulumi
