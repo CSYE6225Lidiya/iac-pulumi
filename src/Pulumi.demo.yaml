@@ -1,0 +1,13 @@
+encryptionsalt: v1:s1e4T1/3jCc=:v1:I0DnaugOIEsm6o1G:8/QUzXtxTXjLaFq7Mop8sYsRtzMUwQ==
+config:
+  aws:region: eu-central-1
+  aws:profile: demo
+network:
+  cidrBlockAddr: 10.2.0.0/16
+  vpcName: MyVpc
+  internetGatewayName: MyInternetGateway
+  internetGatewayAttachmentName: MyInternetGatewayAttachment
+  publicRouteTableName: MyPublicRouteTable
+  privateRouteTableName: MyPrivateRouteTable
+  publicRouteName: MyPublicRoute
+  subnet: 24

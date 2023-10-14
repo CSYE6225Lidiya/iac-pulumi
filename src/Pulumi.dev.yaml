@@ -1,0 +1,14 @@
+encryptionsalt: v1:LpJ4/Y5Q7sE=:v1:vttAsLJR1OtXpHlR:9o/NHSjv9d5dXbA6P93d3LHwmMjHSw==
+config:
+  aws:region: us-west-2
+  aws:profile: dev
+network:
+  cidrBlockAddr: 10.2.0.0/16
+  vpcName: MyVpc
+  internetGatewayName: MyInternetGateway
+  internetGatewayAttachmentName: MyInternetGatewayAttachment
+  publicRouteTableName: MyPublicRouteTable
+  privateRouteTableName: MyPrivateRouteTable
+  publicRouteName: MyPublicRoute
+  subnet: 24
+ 
