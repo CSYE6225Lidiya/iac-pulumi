@@ -23,6 +23,8 @@ type Config struct {
 		PrivateRouteTableName         string `yaml:"privateRouteTableName"`
 		SubNet                        uint   `yaml:"subnet"`
 		PublicRouteName               string `yaml:"publicRouteName"`
+		SSHKeyName                    string `yaml:"sshKeyName"`
+		AmiName                       string `yaml:"amiName"`
 	} `yaml:"network"`
 }
 
@@ -100,6 +102,7 @@ func main() {
 		if err != nil {
 			return err
 		}
+		var publicSubnetIDs []pulumi.IDOutput
 
 		// Create Subnets
 		subnetRange := 1
@@ -124,6 +127,7 @@ func main() {
 					SubnetId:     subnet.ID(),
 					RouteTableId: publicRouteTable.ID(),
 				})
+				publicSubnetIDs = append(publicSubnetIDs, subnet.ID())
 				if err != nil {
 					return err
 				}
@@ -175,6 +179,7 @@ func main() {
 					SubnetId:     subnet.ID(),
 					RouteTableId: publicRouteTable.ID(),
 				})
+				publicSubnetIDs = append(publicSubnetIDs, subnet.ID())
 				if err != nil {
 					return err
 				}
@@ -214,6 +219,78 @@ func main() {
 		})
 		if err != nil {
 			return err
+		}
+
+		// Create an application security group for app deployment
+		appSecGroup, err := ec2.NewSecurityGroup(ctx, "application security group", &ec2.SecurityGroupArgs{
+			Description: pulumi.String("Allow TLS inbound traffic"),
+			VpcId:       myVpc.ID(),
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create ingress rules for security groups
+		// Define the list of ports to allow inbound traffic
+		ingressPorts := []int{22, 80, 443, 8080}
+
+		// Add an ingress rule for each port in the list
+		for i, port := range ingressPorts {
+			_, err := ec2.NewSecurityGroupRule(ctx, fmt.Sprintf("ingressRule-%d", i), &ec2.SecurityGroupRuleArgs{
+				Type:            pulumi.String("ingress"),
+				FromPort:        pulumi.Int(port),
+				ToPort:          pulumi.Int(port),
+				Protocol:        pulumi.String("tcp"),
+				CidrBlocks:      pulumi.StringArray{pulumi.String("0.0.0.0/0")},
+				SecurityGroupId: appSecGroup.ID(),
+			})
+			if err != nil {
+				return err
+			}
+		}
+
+		// Lookup AMI
+		myami, err := ec2.LookupAmi(ctx, &ec2.LookupAmiArgs{
+			MostRecent: pulumi.BoolRef(true),
+			Filters: []ec2.GetAmiFilter{
+				{
+					Name: "name",
+					Values: []string{
+						config.Network.AmiName,
+					},
+				},
+			},
+		}, nil)
+		if err != nil {
+			return err
+		} else {
+			println("&&&&&&&&&&&&&&&&&&&&FoundAMISuccessfully")
+		}
+
+		// Create EC2 from AMI
+
+		groupIds := pulumi.StringArray{
+			appSecGroup.ID(),
+		}
+
+		_, err = ec2.NewInstance(ctx, "web", &ec2.InstanceArgs{
+			Ami:                   pulumi.String(myami.Id),
+			InstanceType:          pulumi.String("t2.micro"),
+			DisableApiTermination: pulumi.Bool(false),
+			RootBlockDevice: &ec2.InstanceRootBlockDeviceArgs{
+				DeleteOnTermination: pulumi.Bool(true),
+				VolumeSize:          pulumi.Int(25),
+				VolumeType:          pulumi.String("gp2"),
+			},
+			VpcSecurityGroupIds:      groupIds,
+			SubnetId:                 publicSubnetIDs[0],
+			AssociatePublicIpAddress: pulumi.Bool(true),
+			KeyName:                  pulumi.String(config.Network.SSHKeyName),
+		})
+		if err != nil {
+			return err
+		} else {
+			println("***********Successfully created ec2 from ami")
 		}
 
 		return nil
