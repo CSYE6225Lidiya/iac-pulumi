@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"strings"
 
 	"github.com/dspinhirne/netaddr-go"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ec2"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/rds"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"gopkg.in/yaml.v3"
 )
@@ -103,6 +105,7 @@ func main() {
 			return err
 		}
 		var publicSubnetIDs []pulumi.IDOutput
+		var privateSubnetIDs []pulumi.IDOutput
 
 		// Create Subnets
 		subnetRange := 1
@@ -147,6 +150,7 @@ func main() {
 					return subNetErr
 				}
 				subnetRange++
+				privateSubnetIDs = append(privateSubnetIDs, subnet.ID())
 				_, err = ec2.NewRouteTableAssociation(ctx, fmt.Sprintf("privateSubnet%d-RouteTableAssociation", i), &ec2.RouteTableAssociationArgs{
 					SubnetId:     subnet.ID(),
 					RouteTableId: privateRouteTable.ID(),
@@ -199,6 +203,7 @@ func main() {
 					return subNetErr
 				}
 				subnetRange++
+				privateSubnetIDs = append(privateSubnetIDs, subnet.ID())
 				_, err = ec2.NewRouteTableAssociation(ctx, fmt.Sprintf("privateSubnet%d-RouteTableAssociation", i), &ec2.RouteTableAssociationArgs{
 					SubnetId:     subnet.ID(),
 					RouteTableId: privateRouteTable.ID(),
@@ -249,6 +254,20 @@ func main() {
 			}
 		}
 
+		_, err = ec2.NewSecurityGroupRule(ctx, "outboundruleApp", &ec2.SecurityGroupRuleArgs{
+			Type:     pulumi.String("egress"),
+			FromPort: pulumi.Int(0),
+			ToPort:   pulumi.Int(65535),
+			Protocol: pulumi.String("tcp"),
+			CidrBlocks: pulumi.StringArray{
+				pulumi.String("0.0.0.0/0"),
+			},
+			SecurityGroupId: appSecGroup.ID(),
+		})
+		if err != nil {
+			return err
+		}
+
 		// Lookup AMI
 		myami, err := ec2.LookupAmi(ctx, &ec2.LookupAmiArgs{
 			MostRecent: pulumi.BoolRef(true),
@@ -267,31 +286,141 @@ func main() {
 			println("&&&&&&&&&&&&&&&&&&&&FoundAMISuccessfully")
 		}
 
-		// Create EC2 from AMI
+		// Create DB Security Group for RDS
+		dbSecurityGroup, err := ec2.NewSecurityGroup(ctx, "dbSecurityGroup", &ec2.SecurityGroupArgs{
+			Description: pulumi.String("DB Security Group"),
+			VpcId:       myVpc.ID(),
+		})
+		if err != nil {
+			return err
+		}
 
+		// Add ingress rule to allow traffic on port 3306 (MySQL) or 5432 (PostgreSQL)
+		_, err = ec2.NewSecurityGroupRule(ctx, "dbSecurityGroupRule", &ec2.SecurityGroupRuleArgs{
+			Type:                  pulumi.String("ingress"),
+			FromPort:              pulumi.Int(3306),
+			ToPort:                pulumi.Int(3306),
+			Protocol:              pulumi.String("tcp"),
+			SourceSecurityGroupId: appSecGroup.ID(),
+			SecurityGroupId:       dbSecurityGroup.ID(),
+		})
+		if err != nil {
+			return err
+		}
+
+		_, err = ec2.NewSecurityGroupRule(ctx, "dbSecurityGroupOutboundRule", &ec2.SecurityGroupRuleArgs{
+			Type:                  pulumi.String("egress"),
+			FromPort:              pulumi.Int(0),
+			ToPort:                pulumi.Int(65535),
+			Protocol:              pulumi.String("tcp"),
+			SourceSecurityGroupId: appSecGroup.ID(),
+			SecurityGroupId:       dbSecurityGroup.ID(),
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create Parameter group for RDS
+		dbParamGp, err := rds.NewParameterGroup(ctx, "rdsparamgroup", &rds.ParameterGroupArgs{
+			Family: pulumi.String("mysql8.0"),
+		})
+		if err != nil {
+			return err
+		}
+
+		dbgroupIds := pulumi.StringArray{
+			dbSecurityGroup.ID(),
+		}
+
+		// Convert pulumi.IDOutput to pulumi.StringArray
+		var privateSubnetIDStrings pulumi.StringArray
+		for _, id := range privateSubnetIDs {
+			privateSubnetIDStrings = append(privateSubnetIDStrings, id.ToStringOutput().ApplyT(func(s string) string { return s }).(pulumi.StringOutput))
+		}
+		dbPvtSubnetGroup, err := rds.NewSubnetGroup(ctx, "dbsubnetgroup", &rds.SubnetGroupArgs{
+			SubnetIds: privateSubnetIDStrings, // Use the private subnets
+			Tags: pulumi.StringMap{
+				"Name": pulumi.String("MyDBSubnetGroup"),
+			},
+		})
+		if err != nil {
+			return err
+		}
+		myRdsInstance, err := rds.NewInstance(ctx, "rdsinstance", &rds.InstanceArgs{
+			AllocatedStorage:    pulumi.Int(10),
+			DbName:              pulumi.String("csye6225"),
+			Engine:              pulumi.String("mysql"),
+			EngineVersion:       pulumi.String("8.0"),
+			InstanceClass:       pulumi.String("db.t3.micro"), //check cheapest
+			ParameterGroupName:  dbParamGp.Name,
+			Password:            pulumi.String("password"),
+			SkipFinalSnapshot:   pulumi.Bool(true),
+			Username:            pulumi.String("csye6225"),
+			MultiAz:             pulumi.Bool(false),
+			Identifier:          pulumi.String("csye6225"),
+			DbSubnetGroupName:   dbPvtSubnetGroup.Name,
+			PubliclyAccessible:  pulumi.Bool(false),
+			VpcSecurityGroupIds: dbgroupIds,
+		})
+		if err != nil {
+			return err
+		}
+
+		rdsEndpoint := myRdsInstance.Endpoint.ApplyT(func(endpoint pulumi.String) string {
+			return string(endpoint)
+		})
+		// Create EC2 from AMI
 		groupIds := pulumi.StringArray{
 			appSecGroup.ID(),
 		}
 
-		_, err = ec2.NewInstance(ctx, "web", &ec2.InstanceArgs{
-			Ami:                   pulumi.String(myami.Id),
-			InstanceType:          pulumi.String("t2.micro"),
-			DisableApiTermination: pulumi.Bool(false),
-			RootBlockDevice: &ec2.InstanceRootBlockDeviceArgs{
-				DeleteOnTermination: pulumi.Bool(true),
-				VolumeSize:          pulumi.Int(25),
-				VolumeType:          pulumi.String("gp2"),
-			},
-			VpcSecurityGroupIds:      groupIds,
-			SubnetId:                 publicSubnetIDs[0],
-			AssociatePublicIpAddress: pulumi.Bool(true),
-			KeyName:                  pulumi.String(config.Network.SSHKeyName),
-		})
-		if err != nil {
-			return err
-		} else {
+		pulumi.All(rdsEndpoint).ApplyT(func(all []interface{}) error {
+			myendPt := all[0].(string)
+			parts := strings.Split(myendPt, ":")
+			var hostname string
+			var port string
+			if len(parts) == 2 {
+				hostname = parts[0]
+				port = parts[1]
+
+				fmt.Println("Hostname:", hostname)
+				fmt.Println("Port:", port)
+			}
+
+			userData := fmt.Sprintf(`#!/bin/bash
+				ENV_FILE="/opt/dbconfig.yaml"
+				echo user: csye6225 >> ${ENV_FILE}
+				echo password: password >> ${ENV_FILE}
+				echo host: "%s" >> ${ENV_FILE}
+				echo port: 3306 >> ${ENV_FILE}
+				echo db: csye6225 >> ${ENV_FILE}
+				sudo chown csye6225:csye6225 $ENV_FILE
+				chmod 664 $ENV_FILE
+			`, hostname)
+
+			_, err := ec2.NewInstance(ctx, "web", &ec2.InstanceArgs{
+				Ami:                   pulumi.String(myami.Id),
+				InstanceType:          pulumi.String("t2.micro"),
+				DisableApiTermination: pulumi.Bool(false),
+				RootBlockDevice: &ec2.InstanceRootBlockDeviceArgs{
+					DeleteOnTermination: pulumi.Bool(true),
+					VolumeSize:          pulumi.Int(25),
+					VolumeType:          pulumi.String("gp2"),
+				},
+				VpcSecurityGroupIds:      groupIds,
+				SubnetId:                 publicSubnetIDs[0],
+				AssociatePublicIpAddress: pulumi.Bool(true),
+				KeyName:                  pulumi.String(config.Network.SSHKeyName),
+				UserData:                 pulumi.String(userData),
+			}, pulumi.DependsOn([]pulumi.Resource{myRdsInstance}))
+
+			if err != nil {
+				return err
+			}
+
 			println("***********Successfully created ec2 from ami")
-		}
+			return nil
+		})
 
 		return nil
 	})
