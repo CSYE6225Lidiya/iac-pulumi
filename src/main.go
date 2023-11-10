@@ -9,7 +9,9 @@ import (
 	"github.com/dspinhirne/netaddr-go"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ec2"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/iam"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/rds"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/route53"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"gopkg.in/yaml.v3"
 )
@@ -396,9 +398,46 @@ func main() {
 				echo db: csye6225 >> ${ENV_FILE}
 				sudo chown csye6225:csye6225 $ENV_FILE
 				chmod 664 $ENV_FILE
+				sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config  -m ec2 -c file:/opt/cloudwatch-config.json -s
 			`, hostname)
 
-			_, err := ec2.NewInstance(ctx, "web", &ec2.InstanceArgs{
+			// Create IAM Role
+			role, err := iam.NewRole(ctx, "role", &iam.RoleArgs{
+				AssumeRolePolicy: pulumi.String(`{
+						"Version": "2012-10-17",
+						"Statement": [
+							{
+								"Action": "sts:AssumeRole",
+								"Principal": {
+									"Service": "ec2.amazonaws.com"
+								},
+								"Effect": "Allow",
+								"Sid": ""
+							}
+						]
+					}`),
+			})
+			if err != nil {
+				return err
+			}
+			// Attach 'CloudWatchAgentServerPolicy' to the IAM Role
+			_, err = iam.NewRolePolicyAttachment(ctx, "rolePolicyAttachment", &iam.RolePolicyAttachmentArgs{
+				Role:      role.Name,
+				PolicyArn: pulumi.String("arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"),
+			})
+			if err != nil {
+				return err
+			}
+
+			// Create IAM Instance Profile and connect role
+			instanceProfile, err := iam.NewInstanceProfile(ctx, "instanceProfile", &iam.InstanceProfileArgs{
+				Role: role.Name,
+			})
+			if err != nil {
+				return err
+			}
+
+			myec2, err := ec2.NewInstance(ctx, "web", &ec2.InstanceArgs{
 				Ami:                   pulumi.String(myami.Id),
 				InstanceType:          pulumi.String("t2.micro"),
 				DisableApiTermination: pulumi.Bool(false),
@@ -410,9 +449,27 @@ func main() {
 				VpcSecurityGroupIds:      groupIds,
 				SubnetId:                 publicSubnetIDs[0],
 				AssociatePublicIpAddress: pulumi.Bool(true),
+				IamInstanceProfile:       instanceProfile.Name,
 				KeyName:                  pulumi.String(config.Network.SSHKeyName),
 				UserData:                 pulumi.String(userData),
 			}, pulumi.DependsOn([]pulumi.Resource{myRdsInstance}))
+
+			if err != nil {
+				return err
+			}
+
+			zoneID := "Z0420517820XQJZJL7G9"
+
+			// Create a A record with the public IP of the EC2 instance
+			_, err = route53.NewRecord(ctx, "record", &route53.RecordArgs{
+				Name: pulumi.String("demo.lidiyacloud.me"), // replace with your domain
+				Ttl:  pulumi.Int(300),
+				Type: pulumi.String("A"),
+				Records: pulumi.StringArray{
+					myec2.PublicIp,
+				},
+				ZoneId: pulumi.String(zoneID),
+			})
 
 			if err != nil {
 				return err
