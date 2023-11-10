@@ -12,4 +12,4 @@ network:
   publicRouteName: MyPublicRoute
   subnet: 24
   sshKeyName : awsdemoeast
-  amiName: autorunami
+  amiName: cloudww1
