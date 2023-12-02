@@ -11,11 +11,16 @@ import (
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/autoscaling"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/cloudwatch"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/dynamodb"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ec2"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/iam"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/lambda"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/lb"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/rds"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/route53"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/sns"
+	"github.com/pulumi/pulumi-gcp/sdk/v7/go/gcp/serviceaccount"
+	"github.com/pulumi/pulumi-gcp/sdk/v7/go/gcp/storage"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"gopkg.in/yaml.v3"
 )
@@ -33,6 +38,8 @@ type Config struct {
 		PublicRouteName               string `yaml:"publicRouteName"`
 		SSHKeyName                    string `yaml:"sshKeyName"`
 		AmiName                       string `yaml:"amiName"`
+		GcpBucketname                 string `yaml:"gcpbucketName"`
+		MandrillKey                   string `yaml:"mandrillKey"`
 	} `yaml:"network"`
 }
 
@@ -428,13 +435,224 @@ func main() {
 		rdsEndpoint := myRdsInstance.Endpoint.ApplyT(func(endpoint pulumi.String) string {
 			return string(endpoint)
 		})
+
+		mysns, err := sns.NewTopic(ctx, "mySNSTopic", nil)
+		if err != nil {
+			return err
+		}
+
+		MySNSStr := mysns.Arn.ApplyT(func(endpoint pulumi.String) string {
+			fmt.Println("Printing the ARNStr", endpoint)
+			return string(endpoint)
+		})
+
+		sa, err := serviceaccount.NewAccount(ctx, "serviceAccount", &serviceaccount.AccountArgs{
+			AccountId:   pulumi.String("service-account-id"),
+			DisplayName: pulumi.String("Service Account"),
+		})
+		if err != nil {
+			return err
+		}
+		// GCP SA KEY
+		key, err := serviceaccount.NewKey(ctx, "mykey", &serviceaccount.KeyArgs{
+			ServiceAccountId: sa.Name,
+			PublicKeyType:    pulumi.String("TYPE_X509_PEM_FILE"),
+		})
+		if err != nil {
+			return err
+		}
+
+		// GCP BUCKET IAM
+		_, err = storage.NewBucketIAMMember(ctx, "member", &storage.BucketIAMMemberArgs{
+			Bucket: pulumi.String(config.Network.GcpBucketname),
+			Role:   pulumi.String("roles/storage.objectAdmin"),
+			Member: pulumi.String("serviceAccount:service-account-id@demoproject-406516.iam.gserviceaccount.com"),
+		}, pulumi.DependsOn([]pulumi.Resource{sa}))
+		if err != nil {
+			return err
+		}
+		privateKeyStr := key.PrivateKey.ApplyT(func(endpoint pulumi.String) string {
+			fmt.Println("Printing the keystr", endpoint)
+			return string(endpoint)
+		})
+		mydynamodb, err := dynamodb.NewTable(ctx, "dynamotbl", &dynamodb.TableArgs{
+			Attributes: dynamodb.TableAttributeArray{
+				&dynamodb.TableAttributeArgs{
+					Name: pulumi.String("ID"),
+					Type: pulumi.String("S"),
+				},
+				&dynamodb.TableAttributeArgs{
+					Name: pulumi.String("Name"),
+					Type: pulumi.String("S"),
+				},
+				&dynamodb.TableAttributeArgs{
+					Name: pulumi.String("Email"),
+					Type: pulumi.String("S"),
+				},
+				&dynamodb.TableAttributeArgs{
+					Name: pulumi.String("DownloadStatus"),
+					Type: pulumi.String("S"),
+				},
+				&dynamodb.TableAttributeArgs{
+					Name: pulumi.String("UploadPath"),
+					Type: pulumi.String("S"),
+				},
+			},
+			HashKey:       pulumi.String("ID"),
+			ReadCapacity:  pulumi.Int(5),
+			WriteCapacity: pulumi.Int(5),
+			GlobalSecondaryIndexes: dynamodb.TableGlobalSecondaryIndexArray{
+				&dynamodb.TableGlobalSecondaryIndexArgs{
+					Name:           pulumi.String("Name"),
+					ProjectionType: pulumi.String("ALL"),
+					ReadCapacity:   pulumi.Int(5),
+					WriteCapacity:  pulumi.Int(5),
+					HashKey:        pulumi.String("Name"),
+				},
+				&dynamodb.TableGlobalSecondaryIndexArgs{
+					Name:           pulumi.String("Email"),
+					ProjectionType: pulumi.String("ALL"),
+					ReadCapacity:   pulumi.Int(5),
+					WriteCapacity:  pulumi.Int(5),
+					HashKey:        pulumi.String("Email"),
+				},
+				&dynamodb.TableGlobalSecondaryIndexArgs{
+					Name:           pulumi.String("DownloadStatus"),
+					ProjectionType: pulumi.String("ALL"),
+					ReadCapacity:   pulumi.Int(5),
+					WriteCapacity:  pulumi.Int(5),
+					HashKey:        pulumi.String("DownloadStatus"),
+				},
+				&dynamodb.TableGlobalSecondaryIndexArgs{
+					Name:           pulumi.String("UploadPath"),
+					ProjectionType: pulumi.String("ALL"),
+					ReadCapacity:   pulumi.Int(5),
+					WriteCapacity:  pulumi.Int(5),
+					HashKey:        pulumi.String("UploadPath"),
+				},
+			},
+		})
+		if err != nil {
+			return err
+		}
+		dynamoNameStr := mydynamodb.Name.ApplyT(func(endpoint pulumi.String) string {
+			fmt.Println("Printing the keystr", endpoint)
+			return string(endpoint)
+		})
+
+		pulumi.All(privateKeyStr, MySNSStr, dynamoNameStr).ApplyT(func(all []interface{}) error {
+			myPvtKey := all[0].(string)
+			mySNS := all[1].(string)
+			myDynamoName := all[2].(string)
+
+			fmt.Println("_____________________")
+			fmt.Println(myPvtKey)
+			fmt.Println("_____________________")
+
+			// Lambda here
+
+			//	roleArn := "arn:aws:iam::203689115380:role/awslambdafullaccess"
+			// Create IAM Role
+			roleLambda, err := iam.NewRole(ctx, "role-Lambda", &iam.RoleArgs{
+				AssumeRolePolicy: pulumi.String(`{
+					"Version": "2012-10-17",
+					"Statement": [
+						{
+							"Action": "sts:AssumeRole",
+							"Principal": {
+								"Service": "lambda.amazonaws.com"
+							},
+							"Effect": "Allow",
+							"Sid": ""
+						}
+					]
+				}`),
+			})
+			if err != nil {
+				return err
+			}
+
+			//Attach Lambda Access Policy
+			_, err = iam.NewRolePolicyAttachment(ctx, "rolePolicyAttachment-LambdaFullAccess-L", &iam.RolePolicyAttachmentArgs{
+				Role:      roleLambda.Name,
+				PolicyArn: pulumi.String("arn:aws:iam::aws:policy/AWSLambda_FullAccess"),
+			})
+			if err != nil {
+				return err
+			}
+
+			//Attach Lambda Access Policy
+			_, err = iam.NewRolePolicyAttachment(ctx, "rolePolicyAttachment-LambdaExecutionPolicy-L", &iam.RolePolicyAttachmentArgs{
+				Role:      roleLambda.Name,
+				PolicyArn: pulumi.String("arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"),
+			})
+			if err != nil {
+				return err
+			}
+
+			//Attach DynamoDb Access Policy
+			_, err = iam.NewRolePolicyAttachment(ctx, "rolePolicyAttachment-DynamoDBAccess-L", &iam.RolePolicyAttachmentArgs{
+				Role:      roleLambda.Name,
+				PolicyArn: pulumi.String("arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"),
+			})
+			if err != nil {
+				return err
+			}
+
+			// create Lambda function
+			lf, err := lambda.NewFunction(ctx, "myLambdaFunction", &lambda.FunctionArgs{
+				Code:    pulumi.NewFileArchive("./myFunction.zip"),
+				Handler: pulumi.String("main"), // suitable as per your function's start file
+				Role:    roleLambda.Arn,
+				Runtime: pulumi.String("go1.x"),
+				Timeout: pulumi.Int(60), // Modifiable as per your function's requirement
+				Environment: &lambda.FunctionEnvironmentArgs{
+					Variables: pulumi.StringMap{
+						"GCPKEY":      pulumi.String(myPvtKey),
+						"GCBUCKET":    pulumi.String(config.Network.GcpBucketname),
+						"DYNAMOTB":    pulumi.String(myDynamoName),
+						"MANDRILLKEY": pulumi.String(config.Network.MandrillKey),
+					},
+				},
+			})
+			if err != nil {
+				return err
+			}
+
+			_, err = lambda.NewPermission(ctx, "myLambdaPermission", &lambda.PermissionArgs{
+				Action:    pulumi.String("lambda:InvokeFunction"),
+				Function:  lf.Name,
+				Principal: pulumi.String("sns.amazonaws.com"),
+				//SourceArn:   pulumi.String("arn:aws:sns:us-east-1:203689115380:topiceast"),
+				SourceArn:   pulumi.String(mySNS),
+				StatementId: pulumi.String("MyStatementId"),
+			})
+			if err != nil {
+				return err
+			}
+
+			_, err = sns.NewTopicSubscription(ctx, "mySubscription", &sns.TopicSubscriptionArgs{
+				Endpoint: lf.Arn,
+				Protocol: pulumi.String("lambda"),
+				//Topic:    pulumi.StringPtr("arn:aws:sns:us-east-1:203689115380:topiceast"),
+				Topic: pulumi.String(mySNS),
+			})
+
+			if err != nil {
+				return err
+			}
+
+			return nil
+		})
+
 		// Create EC2 from AMI
 		groupIds := pulumi.StringArray{
 			appSecGroup.ID(),
 		}
 
-		pulumi.All(rdsEndpoint).ApplyT(func(all []interface{}) error {
+		pulumi.All(rdsEndpoint, MySNSStr).ApplyT(func(all []interface{}) error {
 			myendPt := all[0].(string)
+			mySNS := all[1].(string)
 			parts := strings.Split(myendPt, ":")
 			var hostname string
 			var port string
@@ -453,10 +671,11 @@ func main() {
 				echo host: "%s" >> ${ENV_FILE}
 				echo port: 3306 >> ${ENV_FILE}
 				echo db: csye6225 >> ${ENV_FILE}
+				echo snsarn: "%s" >> ${ENV_FILE}
 				sudo chown csye6225:csye6225 $ENV_FILE
 				chmod 664 $ENV_FILE
 				sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config  -m ec2 -c file:/opt/cloudwatch-config.json -s
-			`, hostname)
+			`, hostname, mySNS)
 
 			// Create IAM Role
 			role, err := iam.NewRole(ctx, "role", &iam.RoleArgs{
@@ -481,6 +700,49 @@ func main() {
 			_, err = iam.NewRolePolicyAttachment(ctx, "rolePolicyAttachment", &iam.RolePolicyAttachmentArgs{
 				Role:      role.Name,
 				PolicyArn: pulumi.String("arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"),
+			})
+			if err != nil {
+				return err
+			}
+
+			//Attach Lambda Access Policy
+			_, err = iam.NewRolePolicyAttachment(ctx, "rolePolicyAttachment-LambdaFullAccess", &iam.RolePolicyAttachmentArgs{
+				Role:      role.Name,
+				PolicyArn: pulumi.String("arn:aws:iam::aws:policy/AWSLambda_FullAccess"),
+			})
+			if err != nil {
+				return err
+			}
+
+			//Attach Lambda Access Policy
+			_, err = iam.NewRolePolicyAttachment(ctx, "rolePolicyAttachment-LambdaExecutionPolicy", &iam.RolePolicyAttachmentArgs{
+				Role:      role.Name,
+				PolicyArn: pulumi.String("arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"),
+			})
+			if err != nil {
+				return err
+			}
+
+			// Creating the IAM Policy for SNS Publish
+			snsPublishPolicy, err := iam.NewPolicy(ctx, "snsPublishPolicy", &iam.PolicyArgs{
+				Policy: pulumi.String(`{
+					"Version": "2012-10-17",
+					"Statement": [{
+						"Effect": "Allow",
+						"Action": "sns:Publish",
+						"Resource": "*"
+					}]
+				}`),
+			})
+			if err != nil {
+				return err
+			}
+
+			// Start creating IAM Role policy attachmentpulumi destroy
+
+			_, err = iam.NewRolePolicyAttachment(ctx, "rolePolicyAttachment-snspublish", &iam.RolePolicyAttachmentArgs{
+				Role:      role.Name,
+				PolicyArn: snsPublishPolicy.Arn,
 			})
 			if err != nil {
 				return err
