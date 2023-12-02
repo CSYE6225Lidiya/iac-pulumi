@@ -2,6 +2,7 @@ encryptionsalt: v1:s1e4T1/3jCc=:v1:I0DnaugOIEsm6o1G:8/QUzXtxTXjLaFq7Mop8sYsRtzMU
 config:
   aws:region: us-east-1
   aws:profile: demo
+  gcp:project: demoproject-406516
 network:
   cidrBlockAddr: 10.2.0.0/16
   vpcName: MyVpc
@@ -12,4 +13,6 @@ network:
   publicRouteName: MyPublicRoute
   subnet: 24
   sshKeyName : awsdemoeast
-  amiName: lbdemo
+  amiName: snsdemo
+  gcpbucketName: gdemobucket
+  mandrillKey: mandrillkey
