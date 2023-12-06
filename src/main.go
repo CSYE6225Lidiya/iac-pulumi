@@ -291,7 +291,7 @@ func main() {
 
 		// Create ingress rules for security groups
 		// Define the list of ports to allow inbound traffic
-		ingressPorts := []int{8080}
+		ingressPorts := []int{8080, 22}
 
 		// Add an ingress rule for each port in the list
 		for i, port := range ingressPorts {
@@ -308,17 +308,17 @@ func main() {
 			}
 		}
 
-		_, err = ec2.NewSecurityGroupRule(ctx, "ingressRuleECSSH", &ec2.SecurityGroupRuleArgs{
-			Type:            pulumi.String("ingress"),
-			FromPort:        pulumi.Int(22),
-			ToPort:          pulumi.Int(22),
-			Protocol:        pulumi.String("tcp"),
-			CidrBlocks:      pulumi.StringArray{pulumi.String("0.0.0.0/0")},
-			SecurityGroupId: appSecGroup.ID(),
-		})
-		if err != nil {
-			return err
-		}
+		// _, err = ec2.NewSecurityGroupRule(ctx, "ingressRuleECSSH", &ec2.SecurityGroupRuleArgs{
+		// 	Type:            pulumi.String("ingress"),
+		// 	FromPort:        pulumi.Int(22),
+		// 	ToPort:          pulumi.Int(22),
+		// 	Protocol:        pulumi.String("tcp"),
+		// 	CidrBlocks:      pulumi.StringArray{pulumi.String("0.0.0.0/0")},
+		// 	SecurityGroupId: appSecGroup.ID(),
+		// })
+		// if err != nil {
+		// 	return err
+		// }
 
 		_, err = ec2.NewSecurityGroupRule(ctx, "outboundruleApp", &ec2.SecurityGroupRuleArgs{
 			Type:     pulumi.String("egress"),
@@ -773,6 +773,7 @@ func main() {
 				IamInstanceProfile: &ec2.LaunchTemplateIamInstanceProfileArgs{
 					Name: instanceProfile.Name,
 				},
+				Name: pulumi.String("launchTemplate"),
 				//VpcSecurityGroupIds: groupIds,
 
 			})
@@ -800,6 +801,7 @@ func main() {
 						PropagateAtLaunch: pulumi.Bool(true),
 					},
 				},
+				Name: pulumi.String("asg"),
 			})
 			if err != nil {
 				return err
@@ -912,7 +914,22 @@ func main() {
 				return err
 			}
 
-			// Attach a listener to the load balancer
+			// // Attach a listener to the load balancer
+			// _, err = lb.NewListener(ctx, "myListenerALB", &lb.ListenerArgs{
+			// 	DefaultActions: lb.ListenerDefaultActionArray{
+			// 		&lb.ListenerDefaultActionArgs{
+			// 			TargetGroupArn: targetGroup.Arn,
+			// 			Type:           pulumi.String("forward"),
+			// 		},
+			// 	},
+			// 	LoadBalancerArn: apl.Arn,
+			// 	Port:            pulumi.Int(80),
+			// 	Protocol:        pulumi.String("HTTP"),
+			// })
+			// if err != nil {
+			// 	return err
+			// }
+
 			_, err = lb.NewListener(ctx, "myListenerALB", &lb.ListenerArgs{
 				DefaultActions: lb.ListenerDefaultActionArray{
 					&lb.ListenerDefaultActionArgs{
@@ -921,8 +938,10 @@ func main() {
 					},
 				},
 				LoadBalancerArn: apl.Arn,
-				Port:            pulumi.Int(80),
-				Protocol:        pulumi.String("HTTP"),
+				Port:            pulumi.Int(443),
+				SslPolicy:       pulumi.String("ELBSecurityPolicy-2016-08"),
+				CertificateArn:  pulumi.String("arn:aws:acm:us-east-1:785896633607:certificate/c21cc8df-5f58-42ee-bf77-c60e053c27ae"),
+				Protocol:        pulumi.String("HTTPS"),
 			})
 			if err != nil {
 				return err

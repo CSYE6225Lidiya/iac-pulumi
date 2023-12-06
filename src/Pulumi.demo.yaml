@@ -13,6 +13,6 @@ network:
   publicRouteName: MyPublicRoute
   subnet: 24
   sshKeyName : awsdemoeast
-  amiName: snsdemo
+  amiName: demosslfinal
   gcpbucketName: gdemobucket
   mandrillKey: mandrillkey
